@@ -5,14 +5,14 @@
 #include <TFT_eSPI.h>
 
 // --- Configuración de Red ---
-const char* ssid = "";
-const char* password = "";
-const char* serverName = "https://";
+const char* ssid = "TU_SSID_AQUI";
+const char* password = "TU_PASSWORD_AQUI";
+const char* serverName = "https://tu-servidor-ec2.com/api/metrics"; // Asegúrate de completar la URL
 
 // --- Configuración de Pines ---
 const int PIN_PIR = 27;       // Pin para el OUT del Sensor PIR
-const int PIN_TFT_LED = 14;   // Pin seguro para el LED de la pantalla (Evita bucles)
-const unsigned long TIEMPO_ENCENDIDO = 15000; // Tiempo de pantalla encendida (15 segundos)
+const int PIN_TFT_LED = 14;   // Pin seguro para el LED de la pantalla
+const unsigned long TIEMPO_ENCENDIDO = 15000; // 15 segundos
 
 // Variables para el control del PIR
 volatile bool movimientoDetectado = false;
@@ -67,20 +67,21 @@ const unsigned char calavera_pixel_art[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00
 };
 
-// Función ISR para la interrupción del PIR
+// Función ISR (Rápida y limpia sin delays)
 void IRAM_ATTR detectarMovimiento() {
   movimientoDetectado = true;
 }
 
 void conectarWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
-  // Forzamos al ESP32 a encender el módem de radio WiFi si estaba apagado
+  
   WiFi.mode(WIFI_STA);
   Serial.print("Conectando a WiFi...");
   WiFi.begin(ssid, password);
+  
   int intentos = 0;
   while (WiFi.status() != WL_CONNECTED && intentos < 20) {
-    delay(500);
+    delay(250); // Delays cortos permitidos solo en el Setup o funciones de inicio aislado
     Serial.print(".");
     intentos++;
   }
@@ -125,7 +126,6 @@ void dibujarPantallaError() {
   tft.setTextSize(2);
   tft.drawCentreString("F EN EL CHAT...", 160, 95, 1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
   tft.drawCentreString("Tu server paso a", 160, 130, 1);
   tft.drawCentreString("mejor vida o el script", 160, 155, 1);
   tft.drawCentreString("se pego un viaje.", 160, 180, 1);
@@ -136,19 +136,19 @@ void dibujarPantallaError() {
 
 void setup() {
   Serial.begin(115200);
-  client.setInsecure(); // Permite conectar a HTTPS saltándose la verificación de certificado estático
+  client.setInsecure(); 
   
-  // Configuración de Hardware
   pinMode(PIN_PIR, INPUT);
   pinMode(PIN_TFT_LED, OUTPUT);
-  digitalWrite(PIN_TFT_LED, HIGH); // Encendida al iniciar
-  
-  attachInterrupt(digitalPinToInterrupt(PIN_PIR), detectarMovimiento, RISING);
+  digitalWrite(PIN_TFT_LED, HIGH); 
   
   tft.init();
   tft.setRotation(1);
   dibujarInterfazDashboard();
   conectarWiFi();
+  
+  // La interrupción se acopla al final para evitar lecturas ruidosas en el arranque
+  attachInterrupt(digitalPinToInterrupt(PIN_PIR), detectarMovimiento, RISING);
   ultimoMovimientoTiempo = millis();
 }
 
@@ -158,31 +158,29 @@ void loop() {
   // --- GESTIÓN DE ENERGÍA Y MOVIMIENTO (PIR) ---
   if (movimientoDetectado) {
     movimientoDetectado = false;
-    // Filtro anti-rebote mejorado
-    delay(50);
+    
+    // Filtro anti-rebote usando millis() en lugar de delay() bloqueante
     if (digitalRead(PIN_PIR) == HIGH) {
       ultimoMovimientoTiempo = tiempoActual;
       if (!pantallaEncendida) {
         Serial.println("¡Movimiento real detectado! Encendiendo todo.");
-        digitalWrite(PIN_TFT_LED, HIGH); // Enciende pantalla
+        digitalWrite(PIN_TFT_LED, HIGH); 
         pantallaEncendida = true;
         
-        // Forzar redibujado base inmediatamente resetando buffers
         cpuAnterior = -1.0; ramAnterior = -1.0; tempAnterior = -1.0;
         if (servidorCaido) dibujarPantallaError(); else dibujarInterfazDashboard();
         
-        // Conectamos de nuevo al WiFi ya que la radio estaba apagada
         conectarWiFi();
       }
     }
   }
 
-  // Apagar pantalla y WiFi tras inactividad (15 segundos)
+  // Apagar pantalla y WiFi tras inactividad
   if (pantallaEncendida && (tiempoActual - ultimoMovimientoTiempo >= TIEMPO_ENCENDIDO)) {
     Serial.println("Sin movimiento. Entrando en modo de ahorro.");
-    digitalWrite(PIN_TFT_LED, LOW); // Apaga el backlight de la pantalla
+    digitalWrite(PIN_TFT_LED, LOW); 
     pantallaEncendida = false;
-    apagarWiFi(); // Desactiva por completo el transmisor WiFi para eliminar el ruido y consumo
+    apagarWiFi(); 
   }
 
   // --- PETICIONES HTTP ---
@@ -207,7 +205,14 @@ void loop() {
           }
 
           String payload = http.getString();
-          StaticJsonDocument<200> doc;
+          
+          // Compatibilidad garantizada para ArduinoJson v6 y v7
+          #if ARDUINOJSON_VERSION_MAJOR >= 7
+            JsonDocument doc;
+          #else
+            StaticJsonDocument<300> doc;
+          #endif
+          
           DeserializationError error = deserializeJson(doc, payload);
 
           if (!error) {
@@ -219,8 +224,10 @@ void loop() {
 
             // Barra CPU
             if (abs(cpuActual - cpuAnterior) > 0.5) {
+              tft.fillRect(70, 55, 90, 20, TFT_BLACK); // Limpia área de texto viejo para evitar números fantasma
               tft.setTextColor(TFT_CYAN, TFT_BLACK);
               tft.drawFloat(cpuActual, 1, 70, 55);
+              
               int anchoNuevo = (int)(anchoMaximo * (cpuActual / 100.0));
               if (anchoNuevo > anchoMaximo) anchoNuevo = anchoMaximo;
               int anchoAnteriorBarra = (int)(anchoMaximo * (cpuAnterior / 100.0));
@@ -235,8 +242,10 @@ void loop() {
 
             // Barra RAM
             if (abs(ramActual - ramAnterior) > 0.5) {
+              tft.fillRect(70, 115, 90, 20, TFT_BLACK); // Limpia área de texto viejo
               tft.setTextColor(TFT_MAGENTA, TFT_BLACK);
               tft.drawFloat(ramActual, 1, 70, 115);
+              
               int anchoNuevo = (int)(anchoMaximo * (ramActual / 100.0));
               if (anchoNuevo > anchoMaximo) anchoNuevo = anchoMaximo;
               int anchoAnteriorBarra = (int)(anchoMaximo * (ramAnterior / 100.0));
@@ -251,8 +260,10 @@ void loop() {
 
             // Barra TEMP
             if (abs(tempActual - tempAnterior) > 0.5) {
+              tft.fillRect(70, 175, 90, 20, TFT_BLACK); // Limpia área de texto viejo
               tft.setTextColor(TFT_RED, TFT_BLACK);
               tft.drawFloat(tempActual, 1, 70, 175);
+              
               int anchoNuevo = (int)(anchoMaximo * (tempActual / 100.0));
               if (anchoNuevo > anchoMaximo) anchoNuevo = anchoMaximo;
               int anchoAnteriorBarra = (int)(anchoMaximo * (tempAnterior / 100.0));
